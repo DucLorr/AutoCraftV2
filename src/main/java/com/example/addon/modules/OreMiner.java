@@ -3,26 +3,21 @@ package com.example.addon.modules;
 import com.example.addon.AddonTemplate;
 import meteordevelopment.meteorclient.events.game.GameLeftEvent;
 import meteordevelopment.meteorclient.events.world.TickEvent;
-import meteordevelopment.meteorclient.settings.*;
+import meteordevelopment.meteorclient.settings.DoubleSetting;
+import meteordevelopment.meteorclient.settings.IntSetting;
+import meteordevelopment.meteorclient.settings.Setting;
+import meteordevelopment.meteorclient.settings.SettingGroup;
 import meteordevelopment.meteorclient.systems.modules.Module;
 import meteordevelopment.orbit.EventHandler;
-import net.minecraft.world.inventory.AbstractContainerMenu;
-import net.minecraft.world.item.Items;
 
 public class OreMiner extends Module {
     private final SettingGroup sgGeneral = this.settings.getDefaultGroup();
 
-    private final Setting<Boolean> autoStartMining = sgGeneral.add(new BooleanSetting.Builder()
-        .name("auto-start-mining")
-        .description("Automatically start mining ores when enabled.")
-        .defaultValue(true)
-        .build()
-    );
-
-    private final Setting<Boolean> autoShulker = sgGeneral.add(new BooleanSetting.Builder()
-        .name("auto-shulker")
-        .description("Automatically use shulker boxes from slots 8 and 9.")
-        .defaultValue(true)
+    private final Setting<Double> miningSpeed = sgGeneral.add(new DoubleSetting.Builder()
+        .name("mining-speed")
+        .description("Speed of mining actions.")
+        .defaultValue(1.0d)
+        .range(0.1d, 5.0d)
         .build()
     );
 
@@ -45,16 +40,18 @@ public class OreMiner extends Module {
 
     @Override
     public void onActivate() {
-        isMining = autoStartMining.get();
+        isMining = true;
         inventoryFull = false;
         tickCounter = 0;
         craftingDelay = 0;
+        AddonTemplate.LOG.info("OreMiner activated - mining all ores");
     }
 
     @Override
     public void onDeactivate() {
         isMining = false;
         inventoryFull = false;
+        AddonTemplate.LOG.info("OreMiner deactivated");
     }
 
     @EventHandler
@@ -71,12 +68,13 @@ public class OreMiner extends Module {
             return;
         }
 
-        // Check if inventory is full
+        // Check if inventory is full (all 35 slots filled)
         if (!inventoryFull && isInventoryFull()) {
             inventoryFull = true;
             isMining = false;
+            AddonTemplate.LOG.info("Inventory full - crafting and storing items");
             craftAndStore();
-            craftingDelay = 60; // 3 seconds delay before next action
+            craftingDelay = 60; // 3 seconds delay
             return;
         }
 
@@ -89,7 +87,7 @@ public class OreMiner extends Module {
     private boolean isInventoryFull() {
         if (mc.player == null) return false;
         
-        // Count empty slots (slots 0-34, excluding offhand)
+        // Count empty slots (slots 0-34)
         int emptySlots = 0;
         for (int i = 0; i < 35; i++) {
             if (mc.player.containerMenu.getSlot(i).getItem().isEmpty()) {
@@ -97,6 +95,7 @@ public class OreMiner extends Module {
             }
         }
         
+        AddonTemplate.LOG.debug("Empty slots: " + emptySlots);
         return emptySlots == 0;
     }
 
@@ -109,10 +108,8 @@ public class OreMiner extends Module {
             AddonTemplate.LOG.info("Sent /craft command");
         }
         
-        // Step 2: Use shulker boxes after delay
-        if (autoShulker.get()) {
-            scheduleShulkerSwap();
-        }
+        // Step 2: Use shulker boxes
+        scheduleShulkerSwap();
     }
 
     private void scheduleShulkerSwap() {
@@ -123,7 +120,7 @@ public class OreMiner extends Module {
                 Thread.sleep(1500);
                 
                 if (mc.player != null && mc.player.containerMenu != null) {
-                    // Take shulker from slot 8 (index 8)
+                    // Take shulker from slot 8
                     clickSlot(8);
                     Thread.sleep(150);
                     
@@ -131,7 +128,7 @@ public class OreMiner extends Module {
                     clickSlot(2);
                     Thread.sleep(150);
                     
-                    // Take shulker from slot 9 (index 9)
+                    // Take shulker from slot 9
                     clickSlot(9);
                     Thread.sleep(150);
                     
@@ -154,9 +151,24 @@ public class OreMiner extends Module {
         if (mc.player == null || mc.player.containerMenu == null) return;
         
         try {
-            mc.player.containerMenu.clicked(slot, 0, net.minecraft.world.inventory.ClickType.PICKUP, mc.player);
+            // Using reflection to avoid import issues with ClickType
+            Object clickType = getClickType("PICKUP");
+            mc.player.containerMenu.getClass().getMethod("clicked", int.class, int.class, Object.class, Object.class)
+                .invoke(mc.player.containerMenu, slot, 0, clickType, mc.player);
         } catch (Exception e) {
-            AddonTemplate.LOG.debug("Error clicking slot: " + e.getMessage());
+            AddonTemplate.LOG.debug("Error clicking slot " + slot + ": " + e.getMessage());
+            // Fallback: simple item swap
+            mc.player.containerMenu.clicked(slot, 0, null, mc.player);
+        }
+    }
+
+    private Object getClickType(String name) {
+        try {
+            Class<?> clickTypeClass = Class.forName("net.minecraft.world.inventory.ClickType");
+            return clickTypeClass.getField(name).get(null);
+        } catch (Exception e) {
+            AddonTemplate.LOG.warn("Could not get ClickType." + name);
+            return null;
         }
     }
 
@@ -178,7 +190,8 @@ public class OreMiner extends Module {
                 return;
             }
 
-            // Cover inventory slots 4-34 with slabs, leaving one slab
+            // Cover slots 4-34 with slabs, leaving at least 1 slab
+            int slotsToFill = 0;
             for (int i = 4; i < 35; i++) {
                 if (mc.player.containerMenu.getSlot(i).getItem().isEmpty()) {
                     // Pick up slab
@@ -189,12 +202,12 @@ public class OreMiner extends Module {
                     clickSlot(i);
                     Thread.sleep(75);
                     
-                    // Stop if we've filled most of inventory
-                    if (i > 32) break;
+                    slotsToFill++;
+                    if (slotsToFill >= 30) break;
                 }
             }
             
-            AddonTemplate.LOG.info("Inventory covered with slabs");
+            AddonTemplate.LOG.info("Covered " + slotsToFill + " inventory slots with slabs");
         } catch (InterruptedException e) {
             AddonTemplate.LOG.error("Cover inventory interrupted", e);
         }
