@@ -6,10 +6,8 @@ import meteordevelopment.meteorclient.events.world.TickEvent;
 import meteordevelopment.meteorclient.settings.*;
 import meteordevelopment.meteorclient.systems.modules.Module;
 import meteordevelopment.orbit.EventHandler;
-import net.minecraft.client.gui.screens.ChatScreen;
-import net.minecraft.world.inventory.ClickType;
+import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.minecraft.world.item.Items;
-import net.minecraft.world.level.block.Blocks;
 
 public class OreMiner extends Module {
     private final SettingGroup sgGeneral = this.settings.getDefaultGroup();
@@ -39,6 +37,7 @@ public class OreMiner extends Module {
     private int tickCounter = 0;
     private boolean isMining = false;
     private boolean inventoryFull = false;
+    private int craftingDelay = 0;
 
     public OreMiner() {
         super(AddonTemplate.CATEGORY, "ore-miner", "Automatically mines all ores, crafts them into slabs, and stores them in shulkers.");
@@ -49,6 +48,7 @@ public class OreMiner extends Module {
         isMining = autoStartMining.get();
         inventoryFull = false;
         tickCounter = 0;
+        craftingDelay = 0;
     }
 
     @Override
@@ -63,18 +63,25 @@ public class OreMiner extends Module {
         if (tickCounter < tickDelay.get()) return;
         tickCounter = 0;
 
-        if (!isMining) return;
+        if (mc.player == null || mc.player.containerMenu == null) return;
+
+        // Handle crafting delay
+        if (craftingDelay > 0) {
+            craftingDelay--;
+            return;
+        }
 
         // Check if inventory is full
-        if (isInventoryFull()) {
+        if (!inventoryFull && isInventoryFull()) {
             inventoryFull = true;
             isMining = false;
             craftAndStore();
+            craftingDelay = 60; // 3 seconds delay before next action
             return;
         }
 
         // Continue mining
-        if (mc.player != null) {
+        if (isMining && mc.player != null) {
             mc.player.swing(mc.player.getUsedItemHand());
         }
     }
@@ -82,7 +89,7 @@ public class OreMiner extends Module {
     private boolean isInventoryFull() {
         if (mc.player == null) return false;
         
-        // Count empty slots (excluding offhand)
+        // Count empty slots (slots 0-34, excluding offhand)
         int emptySlots = 0;
         for (int i = 0; i < 35; i++) {
             if (mc.player.containerMenu.getSlot(i).getItem().isEmpty()) {
@@ -94,10 +101,15 @@ public class OreMiner extends Module {
     }
 
     private void craftAndStore() {
-        // Step 1: Use /craft command
-        sendCommand("/craft");
+        if (mc.player == null) return;
+
+        // Step 1: Send /craft command
+        if (mc.player.connection != null) {
+            mc.player.connection.sendChat("/craft");
+            AddonTemplate.LOG.info("Sent /craft command");
+        }
         
-        // Step 2: Wait and then use shulkers
+        // Step 2: Use shulker boxes after delay
         if (autoShulker.get()) {
             scheduleShulkerSwap();
         }
@@ -106,28 +118,31 @@ public class OreMiner extends Module {
     private void scheduleShulkerSwap() {
         if (mc.player == null) return;
 
-        // Delay before opening shulker
         new Thread(() -> {
             try {
-                Thread.sleep(1000);
+                Thread.sleep(1500);
                 
-                // Take shulker from slot 8 (9th slot)
-                if (mc.player != null) {
-                    mc.player.containerMenu.clicked(8, 0, ClickType.PICKUP, mc.player);
-                    Thread.sleep(100);
+                if (mc.player != null && mc.player.containerMenu != null) {
+                    // Take shulker from slot 8 (index 8)
+                    clickSlot(8);
+                    Thread.sleep(150);
                     
-                    // Place shulker on inventory slot 0
-                    mc.player.containerMenu.clicked(0, 0, ClickType.PICKUP, mc.player);
-                    Thread.sleep(100);
+                    // Place in slot 2
+                    clickSlot(2);
+                    Thread.sleep(150);
                     
-                    // Take shulker from slot 9 if needed
-                    mc.player.containerMenu.clicked(9, 0, ClickType.PICKUP, mc.player);
-                    Thread.sleep(100);
-                    mc.player.containerMenu.clicked(1, 0, ClickType.PICKUP, mc.player);
-                    Thread.sleep(100);
+                    // Take shulker from slot 9 (index 9)
+                    clickSlot(9);
+                    Thread.sleep(150);
+                    
+                    // Place in slot 3
+                    clickSlot(3);
+                    Thread.sleep(150);
                     
                     // Cover remaining inventory with slabs
                     coverInventoryWithSlabs();
+                    
+                    AddonTemplate.LOG.info("Shulker swap completed");
                 }
             } catch (InterruptedException e) {
                 AddonTemplate.LOG.error("Shulker swap interrupted", e);
@@ -135,8 +150,18 @@ public class OreMiner extends Module {
         }).start();
     }
 
+    private void clickSlot(int slot) {
+        if (mc.player == null || mc.player.containerMenu == null) return;
+        
+        try {
+            mc.player.containerMenu.clicked(slot, 0, net.minecraft.world.inventory.ClickType.PICKUP, mc.player);
+        } catch (Exception e) {
+            AddonTemplate.LOG.debug("Error clicking slot: " + e.getMessage());
+        }
+    }
+
     private void coverInventoryWithSlabs() {
-        if (mc.player == null) return;
+        if (mc.player == null || mc.player.containerMenu == null) return;
 
         try {
             // Find slab item stack
@@ -148,26 +173,28 @@ public class OreMiner extends Module {
                 }
             }
 
-            if (slabSlot == -1) return;
+            if (slabSlot == -1) {
+                AddonTemplate.LOG.warn("No slabs found in inventory");
+                return;
+            }
 
-            // Cover inventory slots with slabs, leaving one slab
-            int slabCount = 0;
-            for (int i = 2; i < 35; i++) {
+            // Cover inventory slots 4-34 with slabs, leaving one slab
+            for (int i = 4; i < 35; i++) {
                 if (mc.player.containerMenu.getSlot(i).getItem().isEmpty()) {
-                    // Click on slab slot to pick it up
-                    mc.player.containerMenu.clicked(slabSlot, 0, ClickType.PICKUP, mc.player);
-                    Thread.sleep(50);
+                    // Pick up slab
+                    clickSlot(slabSlot);
+                    Thread.sleep(75);
                     
-                    // Click on target slot to place slab
-                    mc.player.containerMenu.clicked(i, 0, ClickType.PICKUP, mc.player);
-                    Thread.sleep(50);
+                    // Place slab in target slot
+                    clickSlot(i);
+                    Thread.sleep(75);
                     
-                    slabCount++;
-                    
-                    // Leave at least 1 slab
-                    if (slabCount >= 33) break;
+                    // Stop if we've filled most of inventory
+                    if (i > 32) break;
                 }
             }
+            
+            AddonTemplate.LOG.info("Inventory covered with slabs");
         } catch (InterruptedException e) {
             AddonTemplate.LOG.error("Cover inventory interrupted", e);
         }
@@ -175,19 +202,14 @@ public class OreMiner extends Module {
 
     private boolean isSlabItem(net.minecraft.world.item.ItemStack stack) {
         if (stack.isEmpty()) return false;
-        String name = stack.getItem().toString();
+        String name = stack.getItem().toString().toLowerCase();
         return name.contains("slab");
-    }
-
-    private void sendCommand(String command) {
-        if (mc.player == null) return;
-        
-        // Send command to chat
-        mc.player.connection.sendChat(command);
     }
 
     @EventHandler
     private void onGameLeft(GameLeftEvent event) {
-        this.toggle();
+        if (this.isActive()) {
+            this.toggle();
+        }
     }
 }
